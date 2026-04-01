@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aurora Skating School | Portal</title>
+    <!-- Modern Outfit Font for premium aesthetic -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="background-container"></div>
+    
+    <main class="auth-container">
+        <!-- LOGIN FORM -->
+        <div class="form-box active" id="loginBox">
+            <div class="form-header">
+                <!-- Skating icon placeholder -->
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="#38bdf8" stroke-width="2"/>
+                    <path d="M7 14L8.5 9.5L12 8L15.5 9.5L17 14" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M9 17.5L12 15L15 17.5" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <h2>Welcome Back</h2>
+                <p>Enter your details to access your account</p>
+            </div>
+            
+            <form id="loginForm" class="auth-form">
+                <div class="input-group">
+                    <label for="loginEmail">Email</label>
+                    <input type="email" id="loginEmail" placeholder="skater@example.com" required>
+                </div>
+                <div class="input-group">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" placeholder="••••••••" required>
+                </div>
+                <button type="submit" class="submit-btn glow-effect">Log In</button>
+            </form>
+            
+            <p class="toggle-text">
+                Don't have an account? <a href="#" id="showSignup">Sign up here</a>
+            </p>
+        </div>
+
+        <!-- SIGNUP FORM -->
+        <div class="form-box signup-box" id="signupBox">
+            <div class="form-header">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="#6ee7b7" stroke-width="2"/>
+                    <path d="M7 14L8.5 9.5L12 8L15.5 9.5L17 14" stroke="#6ee7b7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M9 17.5L12 15L15 17.5" stroke="#6ee7b7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <h2>Join Our School</h2>
+                <p>Start your skating journey today</p>
+            </div>
+            
+            <form id="signupForm" class="auth-form">
+                <div class="input-group">
+                    <label for="signupName">Full Name</label>
+                    <input type="text" id="signupName" placeholder="Jane Doe" required>
+                </div>
+                <div class="input-group">
+                    <label for="signupEmail">Email</label>
+                    <input type="email" id="signupEmail" placeholder="skater@example.com" required>
+                </div>
+                <div class="input-group">
+                    <label for="signupPassword">Password</label>
+                    <input type="password" id="signupPassword" placeholder="••••••••" required>
+                </div>
+                <div class="input-group">
+                    <label for="confirmPassword">Confirm Password</label>
+                    <input type="password" id="confirmPassword" placeholder="••••••••" required>
+                </div>
+                <!-- Error container for password mismatch -->
+                <div class="error-message" id="errorMsg"></div>
+                
+                <button type="submit" class="submit-btn outline glow-effect">Create Account</button>
+            </form>
+            
+            <p class="toggle-text">
+                Already have an account? <a href="#" id="showLogin">Log in here</a>
+            </p>
+        </div>
+    </main>
+    <script src="script.js"></script>
+</body>
+</html>
