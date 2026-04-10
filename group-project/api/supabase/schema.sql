@@ -5,12 +5,6 @@ drop table if exists public.community_classes cascade;
 drop table if exists public.skating_classes cascade;
 drop table if exists public.logs cascade;
 
-do $$ begin
-  drop type public.user_role cascade;
-exception
-  when others then null;
-end $$;
-
 do $$
 begin
   create type public.user_role as enum ('admin', 'skater', 'coach');
@@ -20,9 +14,11 @@ end $$;
 
 create table if not exists public.users (
   id uuid primary key references auth.users(id) on delete cascade,
-  role public.user_role not null default 'skater',
   created_at timestamptz not null default now()
 );
+
+-- Ensure the role column always securely exists on the users table
+alter table public.users add column if not exists role public.user_role not null default 'skater';
 
 create table if not exists public.skating_classes (
   id uuid primary key default gen_random_uuid(),
@@ -67,48 +63,77 @@ alter table public.skating_classes enable row level security;
 alter table public.class_registrations enable row level security;
 alter table public.logs enable row level security;
 
+-- HELPER FUNCTIONS FOR RLS
+create or replace function public.is_admin()
+returns boolean as $$
+begin
+  return exists (
+    select 1 from public.users where id = auth.uid() and role = 'admin'
+  );
+end;
+$$ language plpgsql security definer;
+
+create or replace function public.is_admin_or_coach()
+returns boolean as $$
+begin
+  return exists (
+    select 1 from public.users where id = auth.uid() and role in ('admin', 'coach')
+  );
+end;
+$$ language plpgsql security definer;
+
 -- USERS POLICIES
+drop policy if exists "users_can_read_own_user_row" on public.users;
 create policy "users_can_read_own_user_row"
   on public.users for select using (auth.uid() = id);
 
+drop policy if exists "admins_can_read_all_users" on public.users;
 create policy "admins_can_read_all_users"
-  on public.users for select using (
-    exists (select 1 from public.users where id = auth.uid() and role = 'admin')
-  );
+  on public.users for select using (public.is_admin());
 
+drop policy if exists "users_can_insert_own_user_row" on public.users;
 create policy "users_can_insert_own_user_row"
   on public.users for insert with check (auth.uid() = id);
 
 -- Allows admins to promote others to admin
+drop policy if exists "admins_can_update_user_roles" on public.users;
 create policy "admins_can_update_user_roles"
-  on public.users for update using (
-    exists (select 1 from public.users where id = auth.uid() and role = 'admin')
-  );
+  on public.users for update using (public.is_admin());
 
 -- CLASSES POLICIES
+drop policy if exists "authenticated_users_can_read_classes" on public.skating_classes;
 create policy "authenticated_users_can_read_classes"
   on public.skating_classes for select to authenticated using (true);
 
+drop policy if exists "admins_and_coaches_can_insert_classes" on public.skating_classes;
 create policy "admins_and_coaches_can_insert_classes"
-  on public.skating_classes for insert to authenticated with check (
-    exists (select 1 from public.users u where u.id = auth.uid() and u.role in ('admin', 'coach'))
-  );
+  on public.skating_classes for insert to authenticated with check (public.is_admin_or_coach());
+
+drop policy if exists "admins_and_coaches_can_update_classes" on public.skating_classes;
+create policy "admins_and_coaches_can_update_classes"
+  on public.skating_classes for update to authenticated using (public.is_admin_or_coach());
+
+drop policy if exists "admins_and_coaches_can_delete_classes" on public.skating_classes;
+create policy "admins_and_coaches_can_delete_classes"
+  on public.skating_classes for delete to authenticated using (public.is_admin_or_coach());
 
 -- REGISTRATIONS POLICIES
+drop policy if exists "skaters_can_read_own_registrations" on public.class_registrations;
 create policy "skaters_can_read_own_registrations"
   on public.class_registrations for select to authenticated using (skater_id = auth.uid());
 
+drop policy if exists "skaters_can_register" on public.class_registrations;
 create policy "skaters_can_register"
   on public.class_registrations for insert to authenticated with check (
     skater_id = auth.uid()
   );
 
 -- LOGS POLICIES
+drop policy if exists "admins_can_read_all_logs" on public.logs;
 create policy "admins_can_read_all_logs"
-  on public.logs for select to authenticated using (
-    exists (select 1 from public.users where id = auth.uid() and role = 'admin')
-  );
+  on public.logs for select to authenticated using (public.is_admin());
 
+drop policy if exists "authenticated_users_can_insert_logs" on public.logs;
 create policy "authenticated_users_can_insert_logs"
   on public.logs for insert to authenticated with check (
     user_id = auth.uid()
