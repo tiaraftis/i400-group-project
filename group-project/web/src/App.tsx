@@ -3,8 +3,10 @@ import { supabase } from './supabase'
 
 function App() {
   const [session, setSession] = useState<any>(null)
-  const [userRole, setUserRole] = useState<'skater' | 'coach' | 'admin'>('skater')
+  const [userRole, setUserRole] = useState<'skater' | 'coach' | 'admin' | 'instructor'>('skater')
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [classes, setClasses] = useState<any[]>([])
+  const [registrations, setRegistrations] = useState<any[]>([])
   
   // Auth Form State
   const [isLogin, setIsLogin] = useState(true)
@@ -27,6 +29,7 @@ function App() {
   const [newClassDesc, setNewClassDesc] = useState('')
   const [newClassCoach, setNewClassCoach] = useState('')
   const [newClassTime, setNewClassTime] = useState('')
+  const [newClassEndTime, setNewClassEndTime] = useState('')
   const [newClassZone, setNewClassZone] = useState('A')
   const [newClassCapacity, setNewClassCapacity] = useState('15')
 
@@ -50,10 +53,18 @@ function App() {
       if (!error && data) setClasses(data)
     }
 
+    const fetchRegistrations = async () => {
+      const { data, error } = await supabase.from('class_registrations').select('*')
+      if (!error && data) setRegistrations(data)
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
       if (session?.user?.id) fetchRole(session.user.id)
-      if (session) fetchClasses()
+      if (session) {
+        fetchClasses()
+        fetchRegistrations()
+      }
     })
 
     const {
@@ -63,9 +74,11 @@ function App() {
       if (session?.user?.id) {
         fetchRole(session.user.id)
         fetchClasses()
+        fetchRegistrations()
       } else {
         setUserRole('skater')
         setClasses([])
+        setRegistrations([])
       }
     })
 
@@ -91,7 +104,11 @@ function App() {
           throw new Error('Passwords do not match. Please try again.')
         }
 
-        const { error } = await supabase.auth.signUp({
+        if (password.length < 5) {
+          throw new Error('Password must be at least 5 characters long.')
+        }
+
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -102,6 +119,15 @@ function App() {
         })
         
         if (error) throw error
+
+        if (data?.user) {
+          // Explicitly insert into public.users to handle cases where the db trigger is missing/failing
+          const { error: insertError } = await supabase.from('users').insert({ id: data.user.id })
+          if (insertError && !insertError.message.includes("duplicate key")) {
+            console.error("Manual insert to users table failed:", insertError)
+          }
+        }
+        
         alert(`Account created successfully! Welcome to the Bloomington Figure Skating Club, ${name}.`)
       }
     } catch (err: any) {
@@ -127,23 +153,40 @@ function App() {
   const handleSaveClass = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    if (!newClassTime) return alert("Please specify a valid class time.")
+    if (!newClassTime || !newClassEndTime) return alert("Please specify both a start and end time.")
 
-    // Convert local HTML input string to an exact standardized JS Date Time point
-    const requestedDateObj = new Date(newClassTime)
-    const requestedEpoch = requestedDateObj.getTime()
-    const dbFormattedISO = requestedDateObj.toISOString() // This converts it to UTC appropriately for Supabase
+    const requestedStartObj = new Date(newClassTime)
+    const requestedEndObj = new Date(newClassEndTime)
     
-    // Duplicate check: Same Zone AND Same Time (comparing explicit milliseconds)
-    // Make sure we bypass the conflict check if the conflicting class is the one we are currently editing!
-    const conflict = classes.find(c => 
-      c.rink_location === newClassZone && 
-      new Date(c.starts_at).getTime() === requestedEpoch &&
-      c.id !== editingClassId
-    )
+    if (requestedEndObj <= requestedStartObj) {
+      return alert("End time must be after the start time.")
+    }
 
-    if (conflict) {
-      return alert(`Slot taken! "${conflict.title}" with ${conflict.coach_name} is already scheduled in Zone ${newClassZone} at that precise time.`)
+    const requestedStartEpoch = requestedStartObj.getTime()
+    const requestedEndEpoch = requestedEndObj.getTime()
+    const dbFormattedStartISO = requestedStartObj.toISOString()
+    const dbFormattedEndISO = requestedEndObj.toISOString()
+
+    const zoneConflict = classes.find(c => {
+      if (c.rink_location !== newClassZone || c.class_id === editingClassId) return false;
+      const existStart = new Date(c.starts_at).getTime()
+      const existEnd = new Date(c.ends_at).getTime()
+      return (requestedStartEpoch < existEnd && requestedEndEpoch > existStart)
+    })
+
+    if (zoneConflict) {
+      return alert(`Zone Conflict! "${zoneConflict.title}" is already scheduled in Zone ${newClassZone} during this time block.`)
+    }
+
+    const coachConflict = classes.find(c => {
+      if (c.coach_name !== newClassCoach || c.class_id === editingClassId) return false;
+      const existStart = new Date(c.starts_at).getTime()
+      const existEnd = new Date(c.ends_at).getTime()
+      return (requestedStartEpoch < existEnd && requestedEndEpoch > existStart)
+    })
+
+    if (coachConflict) {
+      return alert(`Instructor Double-Booked! ${newClassCoach} is already scheduled to teach "${coachConflict.title}" during this time block.`)
     }
 
     const payload = {
@@ -152,18 +195,19 @@ function App() {
       description: newClassDesc,
       coach_name: newClassCoach,
       rink_location: newClassZone,
-      starts_at: dbFormattedISO,
+      starts_at: dbFormattedStartISO,
+      ends_at: dbFormattedEndISO,
       capacity: parseInt(newClassCapacity) || 15
     }
 
     if (editingClassId) {
       // UPDATE EXISTING
-      const { data, error } = await supabase.from('skating_classes').update(payload).eq('id', editingClassId).select()
+      const { data, error } = await supabase.from('skating_classes').update(payload).eq('class_id', editingClassId).select()
       
       if (error) {
         alert("Error updating class: " + error.message)
       } else if (data) {
-        setClasses(classes.map(c => c.id === editingClassId ? data[0] : c))
+        setClasses(classes.map(c => c.class_id === editingClassId ? data[0] : c))
         alert('Class successfully updated!')
         cancelForm()
       }
@@ -189,12 +233,13 @@ function App() {
     setNewClassDesc('')
     setNewClassCoach('')
     setNewClassTime('')
+    setNewClassEndTime('')
     setNewClassZone('A')
     setNewClassCapacity('15')
   }
 
   const handleSelectClassForEdit = (cls: any) => {
-    setEditingClassId(cls.id)
+    setEditingClassId(cls.class_id)
     setNewClassName(cls.title)
     setNewClassLevel(cls.level)
     setNewClassDesc(cls.description)
@@ -207,26 +252,94 @@ function App() {
     const tzOffsetMs = dbDate.getTimezoneOffset() * 60000
     const localISOTime = new Date(dbDate.getTime() - tzOffsetMs).toISOString().slice(0, 16)
     setNewClassTime(localISOTime)
+    
+    if (cls.ends_at) {
+        const endDbDate = new Date(cls.ends_at)
+        const endLocalISOTime = new Date(endDbDate.getTime() - tzOffsetMs).toISOString().slice(0, 16)
+        setNewClassEndTime(endLocalISOTime)
+    } else {
+        setNewClassEndTime('')
+    }
   }
 
   const handleDeleteClass = async (id: string) => {
     if (!confirm("Are you absolutely sure you want to permanently delete this scheduled class?")) return;
     
-    const { error } = await supabase.from('skating_classes').delete().eq('id', id)
+    const { error } = await supabase.from('skating_classes').delete().eq('class_id', id)
     if (error) {
       alert("Failed to delete class: " + error.message)
     } else {
-      setClasses(classes.filter(c => c.id !== id))
+      setClasses(classes.filter(c => c.class_id !== id))
       if (editingClassId === id) cancelForm()
     }
   }
 
+  const handleUnenrollFromClass = async (cls: any) => {
+    if (!confirm(`Are you absolutely sure you want to unenroll from ${cls.title}?`)) return;
+
+    const { error } = await supabase
+      .from('class_registrations')
+      .delete()
+      .eq('skater_id', session.user.id)
+      .eq('class_id', cls.class_id);
+
+    if (error) {
+      alert("Failed to unenroll: " + error.message);
+    } else {
+      setRegistrations(registrations.filter(r => !(r.skater_id === session.user.id && r.class_id === cls.class_id)));
+    }
+  }
+
+  const handleSignUpForClass = async (cls: any) => {
+    // Prevent signing up for two classes at identical date+time
+    const myRegistrations = registrations.filter(r => r.skater_id === session?.user?.id);
+    const myClasses = classes.filter(c => myRegistrations.some(r => r.class_id === c.class_id));
+    
+    const reqStart = new Date(cls.starts_at).getTime();
+    const reqEnd = new Date(cls.ends_at).getTime();
+    
+    const conflict = myClasses.find(myCls => {
+      const existStart = new Date(myCls.starts_at).getTime();
+      const existEnd = new Date(myCls.ends_at).getTime();
+      return (reqStart < existEnd && reqEnd > existStart);
+    });
+
+    if (conflict) {
+      return alert(`Time conflict! You are already taking "${conflict.title}" at this exact time.`);
+    }
+
+    // Class Capacity Check
+    const currentRegCount = registrations.filter(r => r.class_id === cls.class_id).length;
+    if (currentRegCount >= cls.capacity) {
+      return alert("Sorry! This class has reached its capacity limit.");
+    }
+
+    // Proceed to sign up
+    const { data, error } = await supabase.from('class_registrations').insert([{
+      skater_id: session.user.id,
+      class_id: cls.class_id
+    }]).select();
+
+    if (error) {
+      alert("Uh oh! Failed to sign up: " + error.message);
+    } else if (data) {
+      setRegistrations([...registrations, ...data]);
+      alert(`Success! You're now registered for ${cls.title}!`);
+    }
+  }
+
   // Helper formatting for timestamps
-  const formatScheduleTime = (isoString: string) => {
-    if (!isoString) return ''
-    const date = new Date(isoString)
-    if (isNaN(date.getTime())) return isoString // fallback to literal text
-    return date.toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+  const formatScheduleTimeBlock = (startIso: string, endIso: string) => {
+    if (!startIso) return ''
+    const date = new Date(startIso)
+    if (isNaN(date.getTime())) return startIso
+    
+    const startStr = date.toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+    if (!endIso) return startStr
+    
+    const end = new Date(endIso)
+    const endStr = end.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' })
+    return `${startStr} - ${endStr}`
   }
 
   // Dashboard Context Data
@@ -251,7 +364,7 @@ function App() {
     },
     navigations: {
       title: "Rink Navigations",
-      desc: "View upcoming schedules, sign up for private ice time, and navigate the Bloomington rink map.",
+      desc: (userRole === 'coach' || userRole === 'instructor') ? 'View your upcoming classes.' : userRole === 'admin' ? "Scroll down to add a new class, or click 'Edit Classes' and choose a class to modify its details." : "View upcoming schedules, sign up for private ice time, and navigate the Bloomington rink map.",
       icon: (
         <svg viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"></circle><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"></polygon>
@@ -270,14 +383,26 @@ function App() {
     const currentTabInfo = tabData[activeTab]
     return (
       <div className="dashboard-layout">
-          <aside className="sidebar">
+          <aside className={`sidebar ${!isSidebarOpen ? 'collapsed' : ''}`}>
               <div className="sidebar-header">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="#6ee7b7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"/>
-                      <path d="M7 14L8.5 9.5L12 8L15.5 9.5L17 14"/>
-                      <path d="M9 17.5L12 15L15 17.5"/>
-                  </svg>
-                  <h3>BFSC Portal</h3>
+                  <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="#6ee7b7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"/>
+                          <path d="M6.5 10C6.5 10 10.5 12 12 12C13.5 12 17.5 10 17.5 10"/>
+                          <path d="M6.5 14C6.5 14 10.5 16 12 16C13.5 16 17.5 14 17.5 14"/>
+                      </svg>
+                      <h3>Skating Portal</h3>
+                  </div>
+                  <button 
+                    className="sidebar-close-btn" 
+                    onClick={() => setIsSidebarOpen(false)}
+                    title="Close Sidebar"
+                  >
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                  </button>
               </div>
               
               <nav className="nav-menu">
@@ -304,12 +429,26 @@ function App() {
           </aside>
 
           <main className="main-content">
+              {!isSidebarOpen && (
+                  <button 
+                    className="sidebar-toggle-btn" 
+                    onClick={() => setIsSidebarOpen(true)}
+                    title="Open Sidebar"
+                  >
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="3" y1="12" x2="21" y2="12"></line>
+                      <line x1="3" y1="6" x2="21" y2="6"></line>
+                      <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                  </button>
+              )}
+
               <div className="welcome-header">
                   <h1>
                     Welcome, {displayName}! 
                     <span className={`role-badge ${userRole}`}>{userRole}</span>
                   </h1>
-                  <p>Select an option from the sidebar to view your progress.</p>
+                  {userRole === 'skater' && <p>Select an option from the sidebar to view your progress.</p>}
               </div>
 
               {activeTab === 'navigations' ? (
@@ -357,23 +496,39 @@ function App() {
                     </div>
 
                     <div className="class-schedule-list">
-                        {classes.length === 0 ? (
+                        {classes.filter(cls => (userRole !== 'coach' && userRole !== 'instructor') || cls.coach_name === displayName).length === 0 ? (
                             <p style={{color: '#94a3b8', fontStyle: 'italic', textAlign: 'center'}}>No classes scheduled yet.</p>
                         ) : (
-                            classes.map(cls => (
-                                <div className={`class-item ${editingClassId === cls.id ? 'editing-active' : ''}`} key={cls.id}>
+                            classes.filter(cls => (userRole !== 'coach' && userRole !== 'instructor') || cls.coach_name === displayName).map(cls => (
+                                <div className={`class-item ${editingClassId === cls.class_id ? 'editing-active' : ''}`} key={cls.class_id}>
                                     <div className="class-letter">{cls.rink_location.replace('Zone ', '')}</div>
-                                    <div className="class-info">
+                                    <div className="class-info" style={{ flex: 1 }}>
                                         <strong>{cls.title}</strong>
                                         <span>{cls.level} - {cls.coach_name}</span>
+                                        <span style={{ display: 'block', fontSize: '13px', color: '#6ee7b7', marginTop: '4px' }}>
+                                            {registrations.filter(r => r.class_id === cls.class_id).length} / {cls.capacity} Enrolled
+                                        </span>
                                     </div>
-                                    <div className="class-time">{formatScheduleTime(cls.starts_at)}</div>
+                                    <div className="class-time">{formatScheduleTimeBlock(cls.starts_at, cls.ends_at)}</div>
                                     
+                                    {/* Action Buttons for Skaters */}
+                                    {userRole === 'skater' && (
+                                        <div className="class-actions" style={{ display: 'flex', marginLeft: '15px' }}>
+                                            {registrations.some(r => r.class_id === cls.class_id && r.skater_id === session?.user?.id) ? (
+                                                <button type="button" onClick={() => handleUnenrollFromClass(cls)} className="glow-effect" title="Click to unenroll" style={{ padding: '6px 12px', background: 'rgba(244, 63, 94, 0.15)', border: '1px solid rgba(244, 63, 94, 0.4)', color: '#f43f5e', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}>Unenroll</button>
+                                            ) : registrations.filter(r => r.class_id === cls.class_id).length >= cls.capacity ? (
+                                                <button disabled style={{ padding: '6px 12px', background: 'rgba(244, 63, 94, 0.2)', border: '1px solid rgba(244, 63, 94, 0.4)', color: '#f43f5e', borderRadius: '6px', cursor: 'default', fontWeight: 600 }}>Full</button>
+                                            ) : (
+                                                <button type="button" onClick={() => handleSignUpForClass(cls)} className="glow-effect" style={{ padding: '6px 12px', background: '#38bdf8', border: 'none', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}>Sign Up!</button>
+                                            )}
+                                        </div>
+                                    )}
+
                                     {/* Action Buttons for Admins Tracking Status */}
                                     {isEditing && (
                                         <div className="class-actions" style={{display: 'flex', gap: '8px', marginLeft: '15px'}}>
                                             <button type="button" onClick={() => handleSelectClassForEdit(cls)} style={{padding: '6px 12px', background: 'transparent', border: '1px solid rgba(56, 189, 248, 0.4)', color: '#38bdf8', borderRadius: '6px', cursor: 'pointer'}}>Edit</button>
-                                            <button type="button" onClick={() => handleDeleteClass(cls.id)} style={{padding: '6px 12px', background: 'transparent', border: '1px solid rgba(244, 63, 94, 0.4)', color: '#f43f5e', borderRadius: '6px', cursor: 'pointer'}}>Delete</button>
+                                            <button type="button" onClick={() => handleDeleteClass(cls.class_id)} style={{padding: '6px 12px', background: 'transparent', border: '1px solid rgba(244, 63, 94, 0.4)', color: '#f43f5e', borderRadius: '6px', cursor: 'pointer'}}>Delete</button>
                                         </div>
                                     )}
                                 </div>
@@ -411,21 +566,25 @@ function App() {
                                         <option value="All Levels">All Levels</option>
                                     </select>
                                 </div>
-                                <div className="input-group" style={{gridColumn: 'span 2'}}>
+                                <div className="input-group full-width-input">
                                     <label>Description</label>
                                     <input type="text" value={newClassDesc} onChange={e => setNewClassDesc(e.target.value)} placeholder="Short description of the class..." required />
                                 </div>
                                 <div className="input-group">
                                     <label>Assigned Coach</label>
-                                    <input type="text" value={newClassCoach} onChange={e => setNewClassCoach(e.target.value)} placeholder="E.g., Coach Sarah" required />
+                                    <input type="text" value={newClassCoach} onChange={e => setNewClassCoach(e.target.value)} placeholder="Type the first and last name only of the coach ex. 'John Apple'" required />
                                 </div>
                                 <div className="input-group">
                                     <label>Capacity</label>
                                     <input type="number" min="1" max="50" value={newClassCapacity} onChange={e => setNewClassCapacity(e.target.value)} required />
                                 </div>
                                 <div className="input-group">
-                                    <label>Schedule Time</label>
+                                    <label>Schedule Start</label>
                                     <input type="datetime-local" value={newClassTime} onChange={e => setNewClassTime(e.target.value)} required />
+                                </div>
+                                <div className="input-group">
+                                    <label>Schedule End</label>
+                                    <input type="datetime-local" value={newClassEndTime} onChange={e => setNewClassEndTime(e.target.value)} required />
                                 </div>
                                 <div className="input-group">
                                     <label>Rink Zone</label>
@@ -520,11 +679,11 @@ function App() {
                 </div>
                 <div className="input-group">
                     <label>Password</label>
-                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required={!isLogin} />
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required={!isLogin} minLength={5} />
                 </div>
                 <div className="input-group">
                     <label>Confirm Password</label>
-                    <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="••••••••" required={!isLogin} />
+                    <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="••••••••" required={!isLogin} minLength={5} />
                 </div>
                 {errorMsg && !isLogin && <div className="error-message">{errorMsg}</div>}
                 
